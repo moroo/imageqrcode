@@ -6,9 +6,50 @@ from PIL import Image
 import sys
 import copy
 
+def showmodules(modules):
+    for n in modules:
+        t=""
+        for m in n:
+            #t += m
+            if m:
+                t+="O"
+            else:
+                t+="."
+        print(t)
+                
 class imgqrcode(qrcode.QRCode):
+    def make_image(self, image_factory=None, **kwargs):
+        """
+        Make an image from the QR Code data.
+
+        If the data has not been compiled yet, make it first.
+        """
+        qrcode.main._check_box_size(self.box_size)
+        if self.data_cache is None:
+            self.make()
+
+        if image_factory is not None:
+            assert issubclass(image_factory, BaseImage)
+        else:
+            image_factory = self.image_factory
+            if image_factory is None:
+                # Use PIL by default
+                from qrcode.image.pil import PilImage
+                image_factory = PilImage
+
+        im = image_factory(
+            self.border, self.modules_count, self.box_size, **kwargs)
+        #print("XXX")
+        #showmodules(self.modules)
+        self.adjustlevel(self.keepdata_cache)
+        for r in range(self.modules_count):
+            for c in range(self.modules_count):
+                if self.modules[r][c]:
+                    im.drawrect(r, c)
+        return im
+
     def makeImpl(self, test, mask_pattern):
-        #qrcode._check_version(self.version)
+        qrcode.main._check_version(self.version)
         self.modules_count = self.version * 4 + 17
         self.modules = [None] * self.modules_count
 
@@ -49,8 +90,12 @@ class imgqrcode(qrcode.QRCode):
         #mask_func = util.mask_func(mask_pattern)
 
         data_len = len(data)
-        sumvalue=0
+        boxlist=[]
+        bl = [0,0,[]]
+        sumvalue = 0
 
+        #print(self.ssize)
+        self.changescore=0
         for col in six.moves.xrange(self.modules_count - 1, 0, -2):
 
             if col <= 6:
@@ -78,8 +123,38 @@ class imgqrcode(qrcode.QRCode):
                         #    xp = False
                         if self.modules[row][c]:
                             sumvalue += 1
+                        bl[2].append((row,c,bitIndex))
                         if bitIndex == 0:
                             self.maptest[row][c] = "%d" % sumvalue
+                            
+                            ty = (row - self.controlwidth)/self.tonesize
+                            tx = (c - self.controlwidth)/self.tonesize
+                            #print(row,c,ty,tx)
+                            if tx >= 0 and tx < self.ssize and ty >= 0 and ty < self.ssize:
+                                bl[0] = sumvalue
+                                bl[1] = self.picm.getpixel((tx,ty))
+                                #print(bl)
+                                boxlist.append(bl)
+                                if bl[0] > bl[1]+self.allow: #change to False
+                                    self.changescore += 1
+                                    vcount = bl[0] - bl[1]
+                                    for n in bl[2]:
+                                        if self.modules[n[0]][n[1]] == True:
+                                            self.modules[n[0]][n[1]] = False
+                                            vcount -= 1
+                                            if vcount <= 0:
+                                                break
+                                elif bl[0] < bl[1]-self.allow: #change to True
+                                    self.changescore += 1
+                                    vcount = bl[1] - bl[0]
+                                    for n in bl[2]:
+                                        if self.modules[n[0]][n[1]] == False:
+                                            self.modules[n[0]][n[1]] = True
+                                            vcount -= 1
+                                            if vcount <= 0:
+                                                break
+
+                            bl = [0,0,[]]
                             sumvalue = 0
                         
                         bitIndex -= 1
@@ -94,15 +169,21 @@ class imgqrcode(qrcode.QRCode):
                     row -= inc
                     inc = -inc
                     break
+        print(len(boxlist))
+        print(self.modules_count)
+        print("Score: %d" % self.changescore)
 
-    def targetimage(self,image,controlwidth=11):
-        codesize=self.modules_count
+    def targetimage(self,image,controlwidth=11,tonesize=2):
+        self.controlwidth = controlwidth
+        self.tonesize = tonesize
+        self.codesize=self.modules_count
         mp=genpixmap(8)
         pic = Image.open(image)
         picb = pic.convert("L")
-        ssize = int((codesize-controlwidth*2)/2)
-        pics = picb.resize((ssize,ssize))
+        #ssize = int((codesize-controlwidth*2)/self.tonesize)
+        pics = picb.resize((self.ssize,self.ssize))
         self.picm = pics.point(mp)
+        #self.ssize = ssize
 
 def genpixmap(targetlevel):
     """Generate pixel value map."""
@@ -147,28 +228,51 @@ def qrmap(qr,picm,controlwidth,pixsize):
 
 def make(code,image):
     border=5
-    version=10
+    version=15
     qr = imgqrcode(
         version=version,
         error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=1,
-        border=0,
+        box_size=2,
+        border=5,
         mask_pattern=2)
-    qr.makeImpl(False,2)
+    qr.controlwidth=25
+    qr.tonesize=2
+    #qr.makeImpl(False,2)
+    #qr.makeImpl(False,2)
     qr.add_data(code)
-    qr.targetimage(image,controlwidth=11)
-    qr.adjustlevel(qr.keepdata_cache)
-    for n in qr.maptest:
-        t=""
-        for m in n:
-            t += m
-            #if m:
-            #    #t+="O"
-            #else:
-            #    #t+="."
-        print(t)
+    qr.modules_count = qr.version * 4 + 17
+    qr.codesize=qr.modules_count
+    qr.ssize = int((qr.codesize-qr.controlwidth*2)/qr.tonesize)
+    qr.allow=2
+    #print("QQQ",qr.codesize,qr.ssize)
+    qr.targetimage(image)
+    #qr.adjustlevel(qr.keepdata_cache)
+    #for n in qr.modules:
+    #    t=""
+    #    for m in n:
+    #        #t += m
+    #        if m:
+    #            t+="O"
+    #        else:
+    #            t+="."
+    #    print(t)
+    #            
+    #for n in qr.maptest:
+    #    t=""
+    #    for m in n:
+    #        t += m
+    #        #if m:
+    #        #    #t+="O"
+    #        #else:
+    #        #    #t+="."
+    #    print(t)
                 
+    #qr.data_cache=copy.deepcopy(qr.keepdata_cache)
+    #print(qr.data_cache)
     img = qr.make_image()
+    #print(qr.keepmodules)
+    #qr.targetimage(image,controlwidth=11)
+    #showmodules(qr.keepmodules)
     img.show()
 
 def xmake(code,image):
@@ -210,4 +314,6 @@ def xmake(code,image):
 
 if __name__ == '__main__':
     make(sys.argv[1],sys.argv[2])
+    #qr = qrcode.make(sys.argv[1])
+    #qr.show()
 
